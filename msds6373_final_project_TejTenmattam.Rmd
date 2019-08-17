@@ -1,0 +1,330 @@
+---
+title: "MSDS 6373 Time Series Section 403 Final Project - Tej Tenmattam"
+authors: 
+- Tej Tenmattam <ttenmattam@smu.edu>
+date: "8/16/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Include Libraries
+library(tidyverse)
+library(GGally)
+library(astsa)
+library(tswge)
+library(tseries)
+library(nnfor)
+library(vars)
+```
+The following data set is a portion of the data taken from a study (Shumway 1988) on the possible effects of pollution and temperature on weekly Respiratory mortality in Los Angeles County. The dataset is called "lap" and is available from the astsa package. The goal of this project is to forecast 5 weeks of respiratory mortality beyond the 508 observations we were given.  
+
+# 1.  (5 pts) Plot the respiratory mortality data you have.  
+```{r, results="hide"}
+# Import "lap" data
+data(lap) 
+# Convert to a time series data frame called RM
+RM=data.frame(date=time(lap),Time=as.factor(seq(1,508,1)),as.matrix(lap))
+# plot realization in RM along with sample autocorrelations, periodogram, and Parzen window-based spectral estimator
+plotts.sample.wge(RM$rmort)
+```
+
+# 2. (5 pts) Comment on it’s stationarity or nonstationarity.
+```{r}
+# Checking for stationarity using plots:
+# Condition 1: Subpopulations of RM$rmort for a given time have constant mean for all t.
+# 𝐸[𝑋_𝑡 ]=𝜇
+# The realization is pseudo-cyclic. The condition that mean does not depend on time is not met visually.
+
+# Condition 2: Subpopulations of X for a given time have a constant and finite variance for all t. 
+# Var[𝑋_𝑡]= 𝜎^2<∞ 
+# Variance also does not appear constant because of the pseudo-cyclic behavior and spikes.
+
+# Condition 3: The correlation of 𝑋_(𝑡_1 )and 𝑋_(𝑡_2 ) depends only on 𝑡_2− 𝑡_1. That is, the covariance between data points is dependent only on how far apart they are, not where they are. 
+acf(RM$rmort[1:254])  
+acf(RM$rmort[255:508])
+# This condition has been met as the lags do not appear to be dependent on time as shown by the ACFs
+acf(RM$rmort,lag.max = 104)
+# Autocorrelations have a damped sinusoidal behavior with cycle length about 52, which is consistent with f0 = 0.019. Spectral density has a peak at about 1/52=0.019
+
+# To verify a season of 52, I have also checked the factor table. 
+est.ar.wge(RM$rmort,p=52,type='burg')
+# Factor table also confirms a system frequency at 0.0190 with a complex conjugate root of "1.0015+-0.1204i" with absolute reciprocal of 0.9914.
+# Another test for stationarity is Dickey Fuller test where H0: model has a root of +1 and HA: the model does not have a root of +1
+adf.test(RM$rmort)
+# The Dickey-Fuller test of 𝐻_0: the model has a unit root, is rejected (p-value=0.01)
+# As per all the above evidence, I can say that the data is non-stationary. This is weekly data with a season of 52.
+```
+
+# 3a. (10 pts) Perform a univariate analysis using a) AR,ARMA, ARIMA, and/or ARUMA models (at least one). Also, clearly explain how you arrived at your final model.
+```{r,results="hide"}
+# EDA:
+# I have used ggapirs plot to check the correlation between the variables
+RM2=RM[c(-1,-2,-3,-5,-7,-8,-9,-10,-11,-12)]
+ggpairs(RM2)
+# From the above plots. Particle counts and temperature are highly correlated with rmort (respiratory mortality). Whereas temperature and particles are not correlated (-0.0172) with each other. Based on this plot I can say that the predictors "temp"" and "particles"" are independent.
+
+# Since the data is weekly, remove weekly trend
+RM_rmort = artrans.wge(RM$rmort, c(rep(0,51),1))
+# Now plot the transformed data
+plotts.sample.wge(RM_rmort)
+# The transformed data still has some autocorrelations, so I have decided to difference it to remove the trend.
+RM_rmort2 = artrans.wge(RM_rmort,phi.tr=1) 
+# The transformed data now appears white.
+plotts.sample.wge(RM_rmort2,arlimits = TRUE)
+```
+```{r}
+# set a seed
+set.seed(2)
+# I will use aic to perform model selection
+aic5.wge(RM_rmort2,type = 'aic')
+# AIC picked ARMA (3,2)
+aic.wge(RM_rmort2,type = 'bic')
+# BIC picked ARMA (1,0)
+# Now let's check the residuals for white noise using the Ljung-Box test
+ljung.wge(RM_rmort2, p=3, q=2)                                   
+ljung.wge(RM_rmort2, p=3, q=2, K = 48)
+# For both K=24 and 48 we reject white noise with p-value less than 0.05. Based on Checks 1 and 2 the residuals from the fitted model do not seem to be white.
+acf(RM_rmort2,lag.max = 150)
+# ACF still confirms that there is still some lags. I will now proceed with forecasts.
+# Get the AIC estimates
+RM_rmort2_est_aic=est.arma.wge(RM_rmort2,p=3,q=2) 
+# Now forecast the AIC model
+RM_rmort2_fore_aic=fore.aruma.wge(RM$rmort[400:508],phi=RM_rmort2_est_aic$phi,theta=RM_rmort2_est_aic$theta,n.ahead=30,s=52,d=1,lastn=T)
+# Get the BIC estimates
+RM_rmort2_est_bic=est.arma.wge(RM_rmort2,p=1,q=0) 
+# Now forecast the BIC model
+RM_rmort2_fore_bic=fore.aruma.wge(RM$rmort[400:508],phi=RM_rmort2_est_bic$phi,theta=RM_rmort2_est_bic$theta,n.ahead=30,s=52,d=1,lastn=T)
+# ASE from AIC 
+ASE1 = mean((RM$rmort[(508-30+1):508]-RM_rmort2_fore_aic$f)^2)                  
+ASE1
+# ASE from BIC 
+ASE2 = mean((RM$rmort[(508-30+1):508]-RM_rmort2_fore_bic$f)^2)                  
+ASE2
+# ASE from BIC is lower (3.4411) and I will pick that model.
+# (1-B)(1-B^52)(1+0.3534987B)(x_t-8.38) = a_t; sigma^a = 6.33
+```
+
+# b) using a neural network based model.
+
+```{r}
+# set a seed
+set.seed(2)
+# Create a new data frame with week number included
+RM3=RM[c(-1,-3,-5,-7,-8,-9,-10,-11,-12)]
+# Create a training set
+RMsmall = RM3[1:478,]
+RMsmallDF = data.frame(Week = ts(RM3$Time),temp = ts(RM3$tempr), part = ts(RM3$part))
+# Fit a neural network mlp model
+fit.mlp1 = mlp(ts(RMsmall$rmort),reps = 50,comb = "mean",xreg = RMsmallDF)
+fit.mlp1
+# Plot the model
+plot(fit.mlp1)
+# Create a test set
+RMDF = data.frame(Week = ts(RM$Time),temp = ts(RM$tempr), part = ts(RM$part))
+# Forecast next 30 weeks
+fore.mlp1 = forecast(fit.mlp1, h = 30, xreg = RMDF)
+# Plot the forecasts
+plot(fore.mlp1)
+par(mfrow = c(2,1))
+#Plot
+plot(seq(1,508,1), RM$rmort, type = "l",xlim = c(0,508), ylab = "Respiratory Mortality", main = "20 Week Respiratory Mortality Forecast")
+lines(seq(479,508,1), fore.mlp1$mean, type = "l", col = "blue")
+#Plot
+plot(seq(479,508,1), RM$rmort[479:508], type = "l",xlim = c(479,508), ylab = "Respiratory Mortality", main = "20 Week Respiratory Mortality Forecast")
+lines(seq(479,508,1), fore.mlp1$mean, type = "l", col = "blue")
+# Calculate and display ASE
+ASE = mean((RM$rmort[479:508] - fore.mlp1$mean)^2)
+ASE
+# ASE using neural network model is 2.6766
+```
+
+# c) an ensemble model with a model from (a) and (b).
+
+```{r}
+# set a seed
+set.seed(2)
+# I will now create an ensemble model from BIC and mlp
+ensemble  = (RM_rmort2_fore_bic$f + fore.mlp1$mean)/2
+# Plot the forecasts
+par(mfrow = c(2,1))
+#Plot
+plot(seq(1,508,1), RM$rmort, type = "l",xlim = c(0,508), ylab = "Respiratory Mortality", main = "20 Week Respiratory Mortality Forecast")
+lines(seq(479,508,1), ensemble, type = "l", col = "green")
+#Plot
+plot(seq(479,508,1), RM$rmort[479:508], type = "l",xlim = c(479,508), ylab = "Respiratory Mortality", main = "20 Week Respiratory Mortality Forecast")
+lines(seq(479,508,1), ensemble, type = "l", col = "green")
+# Calculate the ASE of the ensemble model
+ASE = mean((RM$rmort[479:508] - ensemble)^2)
+ASE
+# ASE using ensemble model is 2.5998
+```
+
+# 3b. (5 pts) Compare these models and describe which univariate model you feel is the best and why.
+
+With ARIMA Seasonal model using BIC I got an ASE of 3.4411. With neural network MLP model I got an ASE of 2.6766 and with the combined ensemble model, the ASE was 2.5998. All of these models have their ASE's very close and might perform better than one another if I try multiple seeds. Remembering George Box’s quote: All models are wrong but some are useful. With seed 2, the ensemble model has the lowest ASE and I will use that model for forecasts.
+
+# 4a.  (10 pts) Perform a multivariate analysis using at least one model from each category:
+
+# 4aa. VAR model:
+```{r}
+# set a seed
+set.seed(2)
+# I will use VARselect to pick p
+VARselect(cbind(RMsmall$rmort[1:478], RMsmall$part[1:478], RMsmall$tempr[1:478]),lag.max = 10, season = 52, type = "both")
+# VARselect picks p=5 (using AIC) and p=1 (using BIC). I will select p=1 from BIC
+RMortVAR = VAR(cbind(RMsmall$rmort[1:478], RMsmall$part[1:478], RMsmall$tempr[1:478]),season = 52, type = "both",p = 1)
+# Forecast next 30 weeks
+preds=predict(RMortVAR,n.ahead=30)
+# Plot the forecasts
+par(mfrow = c(2,1))
+#Plot
+plot(seq(1,508,1), RM$rmort, type = "l",xlim = c(0,508), ylab = "Respiratory Mortality", main = "20 Week Respiratory Mortality Forecast")
+lines(seq(479,508,1), preds$fcst$y1[,1], type = "l", col = "red")
+#Plot
+plot(seq(479,508,1), RM$rmort[479:508], type = "l",xlim = c(479,508), ylab = "Respiratory Mortality", main = "20 Week Respiratory Mortality Forecast")
+lines(seq(479,508,1), preds$fcst$y1[,1], type = "l", col = "red")
+# Calculate and display ASE
+ASE = mean((RM$rmort[479:508] - preds$fcst$y1[,1])^2)
+ASE
+# ASE using VAR model is 3.1057
+```
+# 4ab. MLR with correlated errors:
+```{r,results="hide"}
+# set a seed
+set.seed(2)
+#forecast Particles
+# plots show a freq near .0192 (annual)
+plotts.sample.wge(RM$part) 
+# Remove the seasonality
+RM_52 = artrans.wge(RM$part, c(rep(0,51),1))
+# plot again. Looks like there is some low freq.
+plotts.sample.wge(RM_52) 
+# aic5 picks ARMA(2,1). I will assume stationary
+aic5.wge(RM_52) 
+# bic picks ARMA(0,0) 
+aic5.wge(RM_52,type = "bic") 
+# Now let's check the residuals for white noise using the Ljung-Box test
+ljung.wge(RM_52)$pval 
+ljung.wge(RM_52, K = 48)$pval 
+# For K=48 we fail to reject white noise. Based on Checks 1 and 2 the residuals from the fitted ARMA(2,1) model seem to be white.
+# Forecast the next 20 weeks
+predsPart = fore.aruma.wge(RM$part,s = 52, n.ahead = 20)
+
+
+#forecast Temp
+# plots show a freq near .0192 (annual)
+plotts.sample.wge(RM$temp) 
+# Remove the seasonality
+RM_52 = artrans.wge(RM$tempr, c(rep(0,51),1))
+# plot again.
+plotts.sample.wge(RM_52) 
+# aic5 picks ARMA(0,0)
+aic5.wge(RM_52) 
+# Now let's check the residuals for white noise using the Ljung-Box test
+ljung.wge(RM_52)$pval
+ljung.wge(RM_52, K = 48)$pval 
+# For both K=24 and 48 we fail to reject white noise
+# Forecast the next 20 weeks
+# acf looks consistent with white noise
+acf(RM_52,lag.max = 48) 
+# Forecast the next 20 weeks
+predsTemp = fore.aruma.wge(RM$tempr,s = 52, n.ahead = 20)
+```
+```{r}
+# Model rmort based on predicted part and temp using MLR with Cor Erros
+#assuming data is loaded in dataframe RMFullDF
+RMFullDF = data.frame(Week = ts(RM$Time),temp = ts(RM$tempr), part = ts(RM$part), rmort = ts(RM$rmort))
+ksfit = lm(RMFullDF$rmort~RMFullDF$temp+RMFullDF$part+RMFullDF$Week)
+phi = aic.wge(ksfit$residuals)
+fit = arima(RMFullDF$rmort,order = c(phi$p,0,0), seasonal = list(order = c(1,0,0), period = 52), xreg = cbind(RMFullDF$temp, RMFullDF$part, RMFullDF$Week))
+
+# Check for whiteness of residuals
+acf(fit$residuals)
+ljung.wge(fit$residuals) # pval = .6970
+ljung.wge(fit$residuals, K = 48) # pval = .7992
+# For both K=24 and 48 we fail to reject white noise
+
+#load the forecasted Part and Temp in a data frame
+next20 = data.frame(temp = predsTemp$f, part = predsPart$f, Week = seq(509,528,1))
+#get predictions
+predsRMort = predict(fit,newxreg = next20)
+#plot next 20 rmort wrt time
+plot(seq(1,508,1), RM$rmort, type = "l",xlim = c(0,528), ylab = "Respiratory Mortality", main = "20 Week Respiratory Mortality Forecast")
+lines(seq(509,528,1), predsRMort$pred, type = "l", col = "red")
+
+#Find ASE  Need to forecast last 30 of known series.  
+RMsmall = RMFullDF[1:478,]
+attach(RMsmall)
+ksfit = lm(rmort~temp+part+Week, data = RMsmall)
+phi = aic.wge(ksfit$residuals)
+attach(RMsmall)
+fit = arima(RMsmall$rmort,order = c(phi$p,0,0), seasonal = list(order = c(1,0,0), period = 52), xreg = cbind(RMsmall$temp, RMsmall$part, RMsmall$Week))
+
+last30 = data.frame(temp = RM$temp[479:508], part = RM$part[479:508], Week = seq(479,508,1))
+#get predictions
+predsRMort = predict(fit,newxreg = last30)
+
+# Calculate and display ASE
+ASE = mean((RM$rmort[479:508] - predsRMort$pred)^2)
+ASE
+
+# ASE using MLR with correlated errors is 3.8125
+```
+
+# 4b. (5pts) Fit and evaluate an ensemble model from the models you fit in 4a.  
+```{r}
+# set a seed
+set.seed(2)
+# I will now create an ensemble model from VAR and MLR models
+ensemble2  = (preds$fcst$y1[,1] + predsRMort$pred)/2
+
+# Plot the forecasts
+par(mfrow = c(2,1))
+#Plot
+plot(seq(1,508,1), RM$rmort, type = "l",xlim = c(0,508), ylab = "Respiratory Mortality", main = "20 Week Respiratory Mortality Forecast")
+lines(seq(479,508,1), ensemble2, type = "l", col = "green")
+#Plot
+plot(seq(479,508,1), RM$rmort[479:508], type = "l",xlim = c(479,508), ylab = "Respiratory Mortality", main = "20 Week Respiratory Mortality Forecast")
+lines(seq(479,508,1), ensemble2, type = "l", col = "green")
+# Calculate the ASE of the ensemble model
+ASE = mean((RM$rmort[479:508] - ensemble2)^2)
+ASE
+# ASE using ensemble model is 1.6372
+```
+
+# 4c. (5 pts) Compare these models and describe which multivariate model you feel is the best and why.
+
+With VAR model I got an ASE of 3.1057. With MLR correlated errors, I got an ASE of 3.8125 and with the combined multivariate ensemble model, the ASE was 1.6372. Remembering George Box’s quote: All models are wrong but some are useful. With seed 2, the ensemble model has the lowest ASE and I will use that model for forecasts.
+
+# 5. (5 pts) Using the model you feel is most useful to forecasting the next 5 weeks of respiratory mortality 
+
+I have picked the ensemble multivariate model of VAR and MLR correlated errors for forecasting the next 5 weeks of respiratory mortality. The decision to use this model was because of the lowest ASE of 1.6372.
+```{r}
+# Predit next 5 weeks of rmort using VAR
+CMortVAR_5 = VAR(cbind(RMFullDF$rmort, RMFullDF$part, RMFullDF$temp),season = 52, type = "both",p = 1)
+# Forecast next 30 weeks
+pred_5=predict(CMortVAR_5,n.ahead=5)
+pred_5$fcst$RMFullDF.rmort
+# display the five forecasts
+pred_5$fcst$RMFullDF.rmort[,1]
+
+# Predit next 5 weeks of rmort using MLR
+#load the forecasted Part and Temp in a data frame
+next5 = data.frame(temp = predsTemp$f[1:5], part = predsPart$f[1:5], Week = seq(509,513,1))
+#get predictions
+predsRMort_5 = predict(fit,newxreg = next5)
+# display the five forecasts
+predsRMort_5$pred
+
+# Create an ensemble of these 5 forecasts
+ensemble5_forecast  = (pred_5$fcst$RMFullDF.rmort[,1] + predsRMort_5$pred)/2
+# Display the next 5 weeks of respiratory mortality forecasts
+ensemble5_forecast
+```
+
+# Honor Code:
+
+I, Tej Tenmattam, abided by the SMU Honor Code and did not communicate about the content of this exam with anyone except for my professor Dr. Bivin Sadler.  
